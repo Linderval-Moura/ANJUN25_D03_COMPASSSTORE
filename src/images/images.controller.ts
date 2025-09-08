@@ -1,34 +1,70 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Post, UseInterceptors, UploadedFile, Get, Query, Param, Delete, Res, UseGuards, HttpException, HttpStatus } from '@nestjs/common';
 import { ImagesService } from './images.service';
-import { CreateImageDto } from './dto/create-image.dto';
-import { UpdateImageDto } from './dto/update-image.dto';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { FileValidationPipe } from '../common/pipes/file-validation.pipe';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { User } from 'src/users/interfaces/user.interface';
+import { Response } from 'express';
 
+@UseGuards(JwtAuthGuard)
 @Controller('images')
 export class ImagesController {
   constructor(private readonly imagesService: ImagesService) {}
 
-  @Post()
-  create(@Body() createImageDto: CreateImageDto) {
-    return this.imagesService.create(createImageDto);
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadFile(
+    @CurrentUser() user: User,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    @UploadedFile(new FileValidationPipe()) file: any,
+  ) {
+    if (!user || !user.userId) {
+      throw new HttpException('User not authenticated.', HttpStatus.FORBIDDEN);
+    }
+
+    return this.imagesService.uploadFile(user.userId, file);
   }
 
   @Get()
-  findAll() {
-    return this.imagesService.findAll();
+  async listImages(
+    @CurrentUser() user: User,
+    @Query('name') name?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    if (!user || !user.userId) {
+      throw new HttpException('User not authenticated.', HttpStatus.FORBIDDEN);
+    }
+
+    return this.imagesService.listImages(user.userId, name, page, limit);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.imagesService.findOne(+id);
+  @Delete(':name')
+  async deleteImage(
+    @CurrentUser() user: User,
+    @Param('name') name: string,
+  ) {
+    if (!user || !user.userId) {
+      throw new HttpException('User not authenticated.', HttpStatus.FORBIDDEN);
+    }
+
+    return this.imagesService.deleteImage(user.userId, name);
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateImageDto: UpdateImageDto) {
-    return this.imagesService.update(+id, updateImageDto);
-  }
+  @Get('export')
+  async exportImages(
+    @CurrentUser() user: User,
+    @Res() res: Response,
+  ) {
+    if (!user || !user.userId) {
+      throw new HttpException('User not authenticated.', HttpStatus.FORBIDDEN);
+    }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.imagesService.remove(+id);
+    const csvStream = await this.imagesService.exportImagesToCsv(user.userId);
+
+    res.header('Content-Type', 'text/csv');
+    res.header('Content-Disposition', 'attachment; filename="images.csv"');
+    res.send(csvStream);
   }
 }
