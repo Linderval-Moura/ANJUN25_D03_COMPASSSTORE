@@ -7,3 +7,6 @@ dist
 *.tsbuildinfo
 
 coverage
+
+docker/dynamodb/
+docker/localstack/
