@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, InternalServerErrorException, Logger } from '@nestjs/common';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { DynamoDBClient, PutItemCommand, QueryCommand, DeleteItemCommand, AttributeValue } from '@aws-sdk/client-dynamodb';
 import { ConfigService } from '@nestjs/config';
@@ -13,6 +13,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 
 @Injectable()
 export class ImagesService {
+  private readonly logger = new Logger(ImagesService.name);
   private readonly s3BucketName: string;
   private readonly s3AssetUrl: string;
   private readonly dynamoDbTableName = 'Images';
@@ -25,6 +26,17 @@ export class ImagesService {
   ) {
     this.s3BucketName = this.configService.getOrThrow<string>('PROVIDER_BUCKET');
     this.s3AssetUrl = this.configService.getOrThrow<string>('S3_ASSET_URL');
+  }
+
+  private async clearUserCache(userId: string) {      
+      const keys = [
+          `user_images:${userId}:1:10`,
+          `user_images:${userId}:undefined:undefined`
+      ];
+
+      for (const key of keys) {
+          await this.cacheManager.del(key);
+      }
   }
 
   async uploadFile(userId: string, file: Express.Multer.File): Promise<{ url: string }> {
@@ -58,8 +70,12 @@ export class ImagesService {
 
       await this.dynamoDbClient.send(dynamoDbCommand);
 
-      await this.cacheManager.del(`user_images:${userId}`);
-
+      try {        
+        await this.clearUserCache(userId);
+      } catch (cacheError) {
+        this.logger.error(`Failed to invalidate cache for user ${userId}: ${cacheError.message}`);
+      }
+      
       return { url: imageUrl };
     } catch (error) {
       console.error('Failed to upload file to AWS services:', error);
@@ -67,17 +83,22 @@ export class ImagesService {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async listImages(userId: string, name?: string, page: number = 1, limit: number = 10): Promise<Image[]> {
-    const cacheKey = `user_images:${userId}`;
+    const cacheKey = `user_images:${userId}:${page}:${limit}`;
 
     if (!name) {
-      const cachedImages = await this.cacheManager.get<Image[]>(cacheKey);
-
-      if (cachedImages) {        
-        return cachedImages;
+      try {
+        const cachedImages = await this.cacheManager.get<Image[]>(cacheKey);
+        if (cachedImages) {        
+          this.logger.log(`Cache HIT: ${cacheKey}`);
+          return cachedImages;
+        }
+      } catch (cacheError) {
+        this.logger.error(`Redis down or read error: ${cacheError.message}`);
       }
     }
+
+    this.logger.log(`MISS Cache: Searching DynamoDB for ${userId}`);
 
     try {
       const params: {
@@ -106,7 +127,11 @@ export class ImagesService {
       const images = result.Items?.map(item => unmarshall(item) as Image) || [];
 
       if (!name) {
-        await this.cacheManager.set(cacheKey, images);
+        try {
+          await this.cacheManager.set(cacheKey, images);
+        } catch (cacheError) {
+           this.logger.error(`Error saving to Redis: ${cacheError.message}`);
+        }
       }
 
       return images; 
@@ -150,7 +175,11 @@ export class ImagesService {
         }),
       }));
 
-      await this.cacheManager.del(`user_images:${userId}`);
+      try {
+        await this.clearUserCache(userId);
+      } catch (cacheError) {
+        this.logger.error(`Error invalidating cache during deletion: ${cacheError.message}`);
+      }
       
       return { message: 'Image deleted successfully' };    
     } catch (error) {
