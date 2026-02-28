@@ -5,11 +5,9 @@ services:
     container_name: assetflux-app
     ports:
       - "3000:3000"
-    env_file: .env
-    environment: 
-      - REDIS_HOST=redis
-      - DATABASE_URL=http://dynamodb-local:8000
-      - S3_ENDPOINT=http://localstack-s3:4566
+    env_file: 
+      - .env
+      - .env.docker        
     depends_on:
       - dynamodb-local
       - localstack
