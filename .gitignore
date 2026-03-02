@@ -3,7 +3,8 @@
 dist
 
 .env
-.env.test
+.env.*
+!.env.example
 
 *.tsbuildinfo
 
